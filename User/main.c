@@ -7,8 +7,8 @@
 
 /****************** 闹钟配置 - 用户可以在这里修改 ******************/
 /* 闹钟开始时间（24小时制） */
-#define ALARM_START_HOUR    16      // 闹钟开始小时 (0-23)
-#define ALARM_START_MINUTE  15      // 闹钟开始分钟 (0-59)
+#define ALARM_START_HOUR    17      // 闹钟开始小时 (0-23)
+#define ALARM_START_MINUTE  16      // 闹钟开始分钟 (0-59)
 
 /* 闹钟维持时间（分钟） */
 #define ALARM_DURATION_MINUTES  2  // 闹钟持续分钟数

@@ -2,7 +2,7 @@
 .\objects\stm32f10x_dma.o: Library\stm32f10x_dma.h
 .\objects\stm32f10x_dma.o: .\Start\stm32f10x.h
 .\objects\stm32f10x_dma.o: .\Start\core_cm3.h
-.\objects\stm32f10x_dma.o: D:\AppGallery\Software\Keil_v5\ARM\ArmCompiler5.06\Bin\..\include\stdint.h
+.\objects\stm32f10x_dma.o: D:\Keil_v5\ARM\ARM_Compiler_5.06u7\Bin\..\include\stdint.h
 .\objects\stm32f10x_dma.o: .\Start\system_stm32f10x.h
 .\objects\stm32f10x_dma.o: .\User\stm32f10x_conf.h
 .\objects\stm32f10x_dma.o: .\Library\stm32f10x_adc.h

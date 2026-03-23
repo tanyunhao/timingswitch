@@ -1,7 +1,7 @@
 .\objects\esp32_ntp.o: Hardware\ESP32_NTP.c
 .\objects\esp32_ntp.o: .\Start\stm32f10x.h
 .\objects\esp32_ntp.o: .\Start\core_cm3.h
-.\objects\esp32_ntp.o: D:\AppGallery\Software\Keil_v5\ARM\ArmCompiler5.06\Bin\..\include\stdint.h
+.\objects\esp32_ntp.o: D:\Keil_v5\ARM\ARM_Compiler_5.06u7\Bin\..\include\stdint.h
 .\objects\esp32_ntp.o: .\Start\system_stm32f10x.h
 .\objects\esp32_ntp.o: .\User\stm32f10x_conf.h
 .\objects\esp32_ntp.o: .\Library\stm32f10x_adc.h
@@ -30,5 +30,5 @@
 .\objects\esp32_ntp.o: .\Library\misc.h
 .\objects\esp32_ntp.o: Hardware\ESP32_NTP.h
 .\objects\esp32_ntp.o: .\System\MyRTC.h
-.\objects\esp32_ntp.o: D:\AppGallery\Software\Keil_v5\ARM\ArmCompiler5.06\Bin\..\include\string.h
-.\objects\esp32_ntp.o: D:\AppGallery\Software\Keil_v5\ARM\ArmCompiler5.06\Bin\..\include\stdlib.h
+.\objects\esp32_ntp.o: D:\Keil_v5\ARM\ARM_Compiler_5.06u7\Bin\..\include\string.h
+.\objects\esp32_ntp.o: D:\Keil_v5\ARM\ARM_Compiler_5.06u7\Bin\..\include\stdlib.h
