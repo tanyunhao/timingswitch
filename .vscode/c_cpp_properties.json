@@ -8,7 +8,7 @@
                 "c:\\Users\\tanbin\\Desktop\\timingswitch\\User",
                 "c:\\Users\\tanbin\\Desktop\\timingswitch\\System",
                 "c:\\Users\\tanbin\\Desktop\\timingswitch\\Hardware",
-                "D:\\AppGallery\\Software\\Keil_v5\\ARM\\ARMCC\\include"
+                "D:\\Keil_v5\\ARM\\ARMCC\\include"
             ],
             "defines": [
                 "USE_STDPERIPH_DRIVER",
