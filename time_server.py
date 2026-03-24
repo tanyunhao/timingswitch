@@ -1,104 +1,101 @@
-# time_server.py - PC端时间同步服务器
-# 通过USB转TTL向STM32提供时间同步（替代ESP32）
-#
-# 依赖：pyserial
-#   安装：pip install pyserial
-#
-# 使用方法：
-#   python time_server.py           # 自动搜索串口
-#   python time_server.py COM3      # 指定串口
+"""
+stm32_timesync.py  —  PC端时间同步脚本
+用法: python stm32_timesync.py [端口]  例: python stm32_timesync.py COM3
+                                           python stm32_timesync.py /dev/ttyUSB0
+
+协议：
+  发送帧: @TIME,YYYY-MM-DD HH:MM:SS#<xor>
+    · xor = payload 所有字节的逐位异或（不含 @ # 定界符）
+  应答:
+    "ACK"  —— STM32 已成功写入 RTC
+    "NAK"  —— 校验失败或内容非法，自动重传（最多 MAX_RETRIES 次）
+"""
 
 import serial
-import serial.tools.list_ports
-import datetime
-import time
 import sys
+import time
+from datetime import datetime
 
-# ========== 配置 ==========
-BAUD_RATE    = 115200
-TIMEZONE_OFFSET_HOURS = 8      # UTC+8，与STM32保持一致
-# =========================
 
-def list_ports():
-    """列出所有可用串口"""
-    ports = serial.tools.list_ports.comports()
-    return [p.device for p in ports]
+# ── 配置 ──────────────────────────────────────────────────────
+PORT         = sys.argv[1] if len(sys.argv) > 1 else "COM8"
+BAUD         = 115200
+ACK_TIMEOUT  = 5.0    # 等待 ACK/NAK 的超时秒数
+MAX_RETRIES  = 100      # NAK 后最大重传次数
+# ─────────────────────────────────────────────────────────────
 
-def select_port():
-    """自动或手动选择串口"""
-    # 命令行参数指定
-    if len(sys.argv) > 1:
-        return sys.argv[1]
 
-    ports = list_ports()
-    if not ports:
-        print("[ERROR] 未找到任何串口，请检查USB转TTL是否已插入。")
-        sys.exit(1)
+def build_frame(dt: datetime) -> bytes:
+    """构造带 XOR 校验的时间帧"""
+    payload = dt.strftime("TIME,%Y-%m-%d %H:%M:%S")
+    xor = 0
+    for ch in payload:
+        xor ^= ord(ch)
+    # 帧 = '@' + payload + '#' + 校验字节（单个原始字节，非ASCII文本）
+    return b'@' + payload.encode("ascii") + b'#' + bytes([xor])
 
-    if len(ports) == 1:
-        print(f"[INFO]  自动选择唯一串口：{ports[0]}")
-        return ports[0]
 
-    # 多个串口时让用户选择
-    print("[INFO]  检测到以下串口：")
-    for i, p in enumerate(ports):
-        print(f"  [{i}] {p}")
-    while True:
-        try:
-            idx = int(input("请选择串口编号："))
-            if 0 <= idx < len(ports):
-                return ports[idx]
-        except ValueError:
-            pass
-        print("输入无效，请重试。")
+def wait_for_response(ser: serial.Serial, timeout: float) -> str:
+    """
+    等待一行应答（ACK 或 NAK），超时返回空字符串。
+    逐字节读取以兼容不同缓冲行为。
+    """
+    deadline = time.monotonic() + timeout
+    buf = b""
+    while time.monotonic() < deadline:
+        chunk = ser.read(16)
+        if chunk:
+            buf += chunk
+            if b'\n' in buf:
+                line = buf.split(b'\n')[0].strip()
+                return line.decode("ascii", errors="replace")
+        else:
+            time.sleep(0.01)
+    return ""
 
-def get_time_str():
-    """返回当前本地时间字符串（UTC+8），格式：YYYY-MM-DD HH:MM:SS"""
-    now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=TIMEZONE_OFFSET_HOURS)
-    return now.strftime("%Y-%m-%d %H:%M:%S")
 
-def send_framed(ser, msg):
-    """将消息包裹在 @ / # 帧中发送，与STM32的USART驱动协议一致"""
-    frame = "@" + msg + "#"
-    ser.write(frame.encode("ascii"))
-    print(f"[SENT]  {frame}")
-
-def main():
-    port = select_port()
-
-    print(f"[INFO]  打开串口 {port}，波特率 {BAUD_RATE}")
+def sync_time(port: str) -> bool:
+    """打开串口，发送时间帧，等待 ACK，必要时重试。返回是否成功。"""
     try:
-        ser = serial.Serial(
-            port     = port,
-            baudrate = BAUD_RATE,
-            bytesize = serial.EIGHTBITS,
-            parity   = serial.PARITY_NONE,
-            stopbits = serial.STOPBITS_ONE,
-            timeout  = 0.1       # 非阻塞读取
-        )
+        ser = serial.Serial(port, BAUD, timeout=0.1)
     except serial.SerialException as e:
-        print(f"[ERROR] 无法打开串口：{e}")
-        sys.exit(1)
+        print(f"[ERROR] 无法打开串口 {port}: {e}")
+        return False
 
-    print("[INFO]  等待STM32请求（按 Ctrl+C 退出）...")
-    print("-" * 40)
+    # 等待串口稳定（USB-TTL 驱动枚举 + STM32 启动窗口）
+    # 保持串口持续打开——STM32 在启动窗口结束后才开始监听
+    print(f"[INFO] 串口已打开: {port} @ {BAUD} baud")
+    print("[INFO] 等待 STM32 就绪（最长 35 秒）...")
 
-    try:
-        while True:
-            # 读取一个字节
-            data = ser.read(1)
-            if data == b'T':
-                time_str = get_time_str()
-                send_framed(ser, "TIME," + time_str)
-            elif data:
-                # 收到非预期字节，打印供调试
-                print(f"[RECV]  未知字节：{data}")
+    for attempt in range(1, MAX_RETRIES + 1):
+        # 每次重传都取当前时间，避免重传时时间戳已过期
+        now   = datetime.now()
+        frame = build_frame(now)
 
-    except KeyboardInterrupt:
-        print("\n[INFO]  用户退出。")
-    finally:
-        ser.close()
-        print("[INFO]  串口已关闭。")
+        print(f"[发送 #{attempt}] {frame[:-1].decode('ascii', errors='replace')}"
+              f"  校验=0x{frame[-1]:02X}  时间={now.strftime('%H:%M:%S')}")
+
+        ser.reset_input_buffer()
+        ser.write(frame)
+
+        response = wait_for_response(ser, ACK_TIMEOUT)
+
+        if response == "ACK":
+            print(f"[OK] STM32 已确认，时间同步成功。")
+            ser.close()
+            return True
+        elif response == "NAK":
+            print(f"[WARN] 收到 NAK（校验或内容错误），准备重传...")
+        else:
+            print(f"[WARN] 超时未收到应答（收到: {repr(response)}），准备重传...")
+
+        time.sleep(0.5)
+
+    print(f"[ERROR] 重试 {MAX_RETRIES} 次后仍未成功。")
+    ser.close()
+    return False
+
 
 if __name__ == "__main__":
-    main()
+    success = sync_time(PORT)
+    sys.exit(0 if success else 1)

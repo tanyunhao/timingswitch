@@ -14,9 +14,10 @@
  *                    → 写入RTC前减去 8h，转为 UTC 存储
  * MyRTC_ReadTime() : 从RTC读出 UTC 时间戳
  *                    → 加上 8h 转为 UTC+8，存入 MyRTC_Time[]
- * NTP_SyncTime()   : ESP32 发来的是 UTC+8 本地时间
- *                    → 填入 MyRTC_Time[] 后调用 MyRTC_SetTime()
- *                    → 与手动设置路径完全一致，无需单独处理
+ * NTP_SyncTime()   : PC 通过 USB-TTL 主动推送 UTC+8 本地时间
+ *                    → 帧格式：@TIME,YYYY-MM-DD HH:MM:SS#<xor校验字节>
+ *                    → 校验通过后填入 MyRTC_Time[]，调用 MyRTC_SetTime()
+ *                    → 成功回复 "ACK\n"，失败由 USART 层或本函数回复 "NAK\n"
  *
  * 之前出现 ~17,740,000,000 溢出的根本原因：
  *   mktime() 收到了未减1900的年份（tm_year=2026而非126），
@@ -29,7 +30,8 @@
 
 uint16_t MyRTC_Time[] = {2023, 1, 1, 23, 59, 55};  /* 年,月,日,时,分,秒（本地UTC+8） */
 
-void MyRTC_SetTime(void);   /* 函数声明 */
+void MyRTC_SetTime(void);            /* 函数声明 */
+static uint32_t CounterToSecsMidnight(uint32_t counter); /* 内部辅助函数声明 */
 
 /**
   * 函    数：RTC初始化
@@ -67,6 +69,27 @@ void MyRTC_Init(void)
 }
 
 /**
+  * 函    数：将RTC计数器值转换为本地时间（UTC+8）的午夜秒数
+  * 参    数：counter - RTC计数器原始值（UTC Unix时间戳）
+  * 返 回 值：从当天午夜起经过的秒数（0 ~ 86399）
+  * 说    明：供 main.c 中的闹钟计算使用，
+  *           使 main.c 无需直接依赖 <time.h>。
+  */
+static uint32_t CounterToSecsMidnight(uint32_t counter)
+{
+    time_t local = (time_t)counter + (time_t)TIMEZONE_OFFSET_SEC;
+    struct tm *t = localtime(&local);
+    return (uint32_t)t->tm_hour * 3600u +
+           (uint32_t)t->tm_min  * 60u   +
+           (uint32_t)t->tm_sec;
+}
+
+uint32_t MyRTC_CounterToSecsMidnight(uint32_t counter)
+{
+    return CounterToSecsMidnight(counter);
+}
+
+/**
   * 函    数：RTC设置时间
   * 说    明：MyRTC_Time[] 中存放 UTC+8 本地时间，
   *           本函数减去8h后以UTC存入RTC计数器。
@@ -74,8 +97,8 @@ void MyRTC_Init(void)
 void MyRTC_SetTime(void)
 {
     struct tm t;
-    t.tm_year  = (int)(MyRTC_Time[0]) - 1900;  /* 必须减1900，例：2026→126 */
-    t.tm_mon   = (int)(MyRTC_Time[1]) - 1;     /* 必须减1，   例：3月→2   */
+    t.tm_year  = (int)(MyRTC_Time[0]) - 1900;
+    t.tm_mon   = (int)(MyRTC_Time[1]) - 1;
     t.tm_mday  = (int)(MyRTC_Time[2]);
     t.tm_hour  = (int)(MyRTC_Time[3]);
     t.tm_min   = (int)(MyRTC_Time[4]);
@@ -107,50 +130,46 @@ void MyRTC_ReadTime(void)
 }
 
 /**
-  * 函    数：通过ESP32获取NTP时间并同步到RTC
+  * 函    数：通过PC（USB-TTL）获取时间并同步到RTC
   * 返 回 值：1=同步成功，0=超时或解析失败
-  * 说    明：ESP32 发来 UTC+8 本地时间，帧格式：
-  *             @TIME,YYYY-MM-DD HH:MM:SS#
-  *           最多重试10次（每次间隔3秒），给ESP32足够的WiFi/NTP启动时间。
-  *           解析成功后调用 MyRTC_SetTime()，路径与手动设置完全一致。
+  * 说    明：被动接收模式。PC端脚本在串口连接后立即主动推送时间帧。
+  *           帧格式：@TIME,YYYY-MM-DD HH:MM:SS#<xor校验字节>
+  *           XOR校验失败时底层自动回复 "NAK\n" 并继续等待下一帧。
+  *           内容非法时本函数回复 "NAK\n"。
+  *           成功时回复 "ACK\n"。超时30秒后回退到RTC现有时间。
   */
 uint8_t NTP_SyncTime(void)
 {
-    char    buffer[64];
-    uint8_t attempts = 0;
+    char     buffer[64];
+    uint32_t waited = 0;
 
-    /* ── 发送请求，带重试 ── */
-    while (attempts < 10)
+    /* 等待 USART 层组装出一帧（最多30秒） */
+    while (1)
     {
-        rx_complete = 0;
-        rx_index    = 0;
+        USART_FrameResult result = USART_ReceiveFrame(buffer, sizeof(buffer), NULL);
 
-        USART_SendByte('T');
+        if (result == FRAME_OK)    break;
+        /* FRAME_ERROR: XOR校验失败，NAK已由底层发出，继续等待下一帧重传 */
 
-        uint32_t waited = 0;
-        while (!rx_complete)
-        {
-            Delay_ms(10);
-            waited += 10;
-            if (waited >= 3000) break;
-        }
-
-        if (rx_complete) break;
-
-        attempts++;
-        Delay_ms(3000);   /* 等ESP32完成WiFi+NTP启动后重试 */
+        Delay_ms(10);
+        waited += 10;
+        if (waited >= 30000) return 0;
     }
 
-    if (!rx_complete) return 0;
-
-    if (!USART_ReceiveString(buffer, sizeof(buffer))) return 0;
-
     /* ── 校验帧头 ── */
-    /* 期望: "TIME,YYYY-MM-DD HH:MM:SS" */
-    if (strncmp(buffer, "TIME,", 5) != 0) return 0;
+    /* 期望 payload: "TIME,YYYY-MM-DD HH:MM:SS" */
+    if (strncmp(buffer, "TIME,", 5) != 0)
+    {
+        USART_SendString("NAK\n");
+        return 0;
+    }
 
     char *p = buffer + 5;
-    if (strlen(p) < 19) return 0;
+    if (strlen(p) < 19)
+    {
+        USART_SendString("NAK\n");
+        return 0;
+    }
 
     /* ── 解析 ──
      * p: "YYYY-MM-DD HH:MM:SS"
@@ -162,11 +181,15 @@ uint8_t NTP_SyncTime(void)
     uint16_t minute = (uint16_t)((p[14]-'0')*10  + (p[15]-'0'));
     uint16_t second = (uint16_t)((p[17]-'0')*10  + (p[18]-'0'));
 
-    /* ── 范围校验，防止乱码写入RTC ── */
-    if (year < 2000 || year > 2099) return 0;
-    if (month < 1   || month > 12)  return 0;
-    if (day   < 1   || day   > 31)  return 0;
-    if (hour  > 23  || minute > 59 || second > 59) return 0;
+    /* ── 范围校验 ── */
+    if (year < 2000 || year > 2099 ||
+        month < 1   || month > 12  ||
+        day   < 1   || day   > 31  ||
+        hour  > 23  || minute > 59 || second > 59)
+    {
+        USART_SendString("NAK\n");
+        return 0;
+    }
 
     /* ── 写入 MyRTC_Time[]（UTC+8本地时间）── */
     MyRTC_Time[0] = year;
@@ -176,8 +199,11 @@ uint8_t NTP_SyncTime(void)
     MyRTC_Time[4] = minute;
     MyRTC_Time[5] = second;
 
-    /* ── 调用标准设置函数，内部自动减去8h存UTC ── */
+    /* ── 写入RTC硬件 ── */
     MyRTC_SetTime();
+
+    /* ── 通知PC已成功接受 ── */
+    USART_SendString("ACK\n");
 
     return 1;
 }

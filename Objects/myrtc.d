@@ -1,7 +1,7 @@
 .\objects\myrtc.o: System\MyRTC.c
 .\objects\myrtc.o: .\Start\stm32f10x.h
 .\objects\myrtc.o: .\Start\core_cm3.h
-.\objects\myrtc.o: D:\Keil_v5\ARM\ARM_Compiler_5.06u7\Bin\..\include\stdint.h
+.\objects\myrtc.o: D:\AppGallery\Software\Keil_v5\ARM\ArmCompiler5.06\Bin\..\include\stdint.h
 .\objects\myrtc.o: .\Start\system_stm32f10x.h
 .\objects\myrtc.o: .\User\stm32f10x_conf.h
 .\objects\myrtc.o: .\Library\stm32f10x_adc.h
@@ -31,5 +31,5 @@
 .\objects\myrtc.o: System\MyRTC.h
 .\objects\myrtc.o: .\Hardware\USART.h
 .\objects\myrtc.o: System\Delay.h
-.\objects\myrtc.o: D:\Keil_v5\ARM\ARM_Compiler_5.06u7\Bin\..\include\time.h
-.\objects\myrtc.o: D:\Keil_v5\ARM\ARM_Compiler_5.06u7\Bin\..\include\string.h
+.\objects\myrtc.o: D:\AppGallery\Software\Keil_v5\ARM\ArmCompiler5.06\Bin\..\include\time.h
+.\objects\myrtc.o: D:\AppGallery\Software\Keil_v5\ARM\ArmCompiler5.06\Bin\..\include\string.h

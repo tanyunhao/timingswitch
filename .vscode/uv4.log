@@ -1,0 +1,39 @@
+*** Using Compiler 'V5.06 update 7 (build 960)', folder: 'D:\Keil_v5\ARM\ARM_Compiler_5.06u7\Bin'
+Build target 'Target 1'
+compiling main.c...
+User\main.c(78): error:  #20: identifier "time_t" is undefined
+      time_t local = (time_t)current_counter + (time_t)(8 * 60 * 60);
+User\main.c(78): error:  #20: identifier "time_t" is undefined
+      time_t local = (time_t)current_counter + (time_t)(8 * 60 * 60);
+User\main.c(78): error:  #65: expected a ";"
+      time_t local = (time_t)current_counter + (time_t)(8 * 60 * 60);
+User\main.c(79): warning:  #223-D: function "localtime" declared implicitly
+      struct tm *t = localtime(&local);
+User\main.c(79): error:  #144: a value of type "int" cannot be used to initialize an entity of type "struct tm *"
+      struct tm *t = localtime(&local);
+User\main.c(82): error:  #393: pointer to incomplete class type is not allowed
+          (uint32_t)t->tm_hour * 3600u +
+User\main.c(83): error:  #393: pointer to incomplete class type is not allowed
+          (uint32_t)t->tm_min  * 60u   +
+User\main.c(84): error:  #393: pointer to incomplete class type is not allowed
+          (uint32_t)t->tm_sec;
+User\main.c(122): error:  #20: identifier "time_t" is undefined
+          time_t local = (time_t)current_counter + (time_t)(8 * 60 * 60);
+User\main.c(122): error:  #20: identifier "time_t" is undefined
+          time_t local = (time_t)current_counter + (time_t)(8 * 60 * 60);
+User\main.c(122): error:  #65: expected a ";"
+          time_t local = (time_t)current_counter + (time_t)(8 * 60 * 60);
+User\main.c(123): warning:  #223-D: function "localtime" declared implicitly
+          struct tm *t = localtime(&local);
+User\main.c(123): error:  #144: a value of type "int" cannot be used to initialize an entity of type "struct tm *"
+          struct tm *t = localtime(&local);
+User\main.c(126): error:  #393: pointer to incomplete class type is not allowed
+              (uint32_t)t->tm_hour * 3600u +
+User\main.c(127): error:  #393: pointer to incomplete class type is not allowed
+              (uint32_t)t->tm_min  * 60u   +
+User\main.c(128): error:  #393: pointer to incomplete class type is not allowed
+              (uint32_t)t->tm_sec;
+User\main.c: 2 warnings, 14 errors
+".\Objects\Project.axf" - 14 Error(s), 2 Warning(s).
+Target not created.
+Build Time Elapsed:  00:00:01

@@ -10,7 +10,7 @@
       <TargetName>Target 1</TargetName>
       <ToolsetNumber>0x4</ToolsetNumber>
       <ToolsetName>ARM-ADS</ToolsetName>
-      <pCCUsed>5060960::V5.06 update 7 (build 960)::.\ARM_Compiler_5.06u7</pCCUsed>
+      <pCCUsed>5060960::V5.06 update 7 (build 960)::.\ArmCompiler5.06</pCCUsed>
       <uAC6>0</uAC6>
       <TargetOption>
         <TargetCommonOption>
@@ -705,16 +705,6 @@
               <FilePath>.\Hardware\OLED_Font.h</FilePath>
             </File>
             <File>
-              <FileName>ESP32_NTP.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>.\Hardware\ESP32_NTP.h</FilePath>
-            </File>
-            <File>
-              <FileName>ESP32_NTP.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\Hardware\ESP32_NTP.c</FilePath>
-            </File>
-            <File>
               <FileName>USART.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\Hardware\USART.c</FilePath>
@@ -723,6 +713,16 @@
               <FileName>USART.h</FileName>
               <FileType>5</FileType>
               <FilePath>.\Hardware\USART.h</FilePath>
+            </File>
+            <File>
+              <FileName>KEY.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Hardware\KEY.c</FilePath>
+            </File>
+            <File>
+              <FileName>KEY.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\Hardware\KEY.h</FilePath>
             </File>
           </Files>
         </Group>

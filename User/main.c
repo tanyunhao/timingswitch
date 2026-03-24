@@ -1,273 +1,418 @@
-#include "stm32f10x.h"                  // Device header
+#include "stm32f10x.h"
 #include "Delay.h"
 #include "OLED.h"
 #include "MyRTC.h"
 #include "USART.h"
 #include "LED.h"
+#include "KEY.h"
 
-/****************** 闹钟配置 - 用户可以在这里修改 ******************/
-/* 闹钟开始时间（24小时制） */
-#define ALARM_START_HOUR    17      // 闹钟开始小时 (0-23)
-#define ALARM_START_MINUTE  16      // 闹钟开始分钟 (0-59)
+/* 
+ * 多闹钟配置 - 用户只需修改这里
+ * 每条记录：{ 开始小时, 开始分钟, 持续分钟数 }
+ * 支持任意数量的闹钟，允许跨天（持续时间超过当天午夜）。
+ * 闹钟时间段不应互相重叠，否则行为未定义。
+ *  */
+typedef struct {
+    uint8_t start_hour;        /* 0-23 */
+    uint8_t start_minute;      /* 0-59 */
+    uint8_t duration_minutes;  /* 1-1439（跨天最多23h59m） */
+} AlarmSlot;
 
-/* 闹钟维持时间（分钟） */
-#define ALARM_DURATION_MINUTES  2  // 闹钟持续分钟数
+static const AlarmSlot ALARMS[] = {
+    {  7, 30, 2 },   /* 闹钟1：07:30 持续 2 分钟 */
+    { 12,  0, 1 },   /* 闹钟2：12:00 持续 1 分钟 */
+    { 22, 28, 2 },   /* 闹钟3：20:20 持续 2 分钟 */
+	{ 23, 00, 1 },
+	{ 23, 10, 1 },
+	{ 23, 20, 1 },
+	{ 23, 30, 1 }
+};
 
-/* 计算闹钟结束时间（自动处理分钟溢出和小时溢出） */
-#define ALARM_TOTAL_MINUTES (ALARM_START_MINUTE + ALARM_DURATION_MINUTES)
-#define ALARM_END_MINUTE    (ALARM_TOTAL_MINUTES % 60)
-#define ALARM_EXTRA_HOURS   (ALARM_TOTAL_MINUTES / 60)
-#define ALARM_END_HOUR      ((ALARM_START_HOUR + ALARM_EXTRA_HOURS) % 24)
+#define ALARM_COUNT  (sizeof(ALARMS) / sizeof(ALARMS[0]))
 
-/* 预计算：闹钟开始/结束的从午夜起的分钟数 */
-#define ALARM_START_MINS_MIDNIGHT  (ALARM_START_HOUR * 60 + ALARM_START_MINUTE)
-#define ALARM_END_MINS_MIDNIGHT    (ALARM_END_HOUR   * 60 + ALARM_END_MINUTE)
+/* 进入待机前在 IDLE 状态停留的秒数 */
+#define IDLE_STANDBY_DELAY_SEC  8u
 
-/****************** 函数声明 ******************/
-uint8_t  IsInAlarmMaintainPeriod(void);
-uint32_t GetNextAlarmStartTime(void);
-void     UpdateAlarmDisplay(uint8_t in_alarm_period);
+/* 
+ * 状态机定义
+ *
+ *                      ┌─────────────────────────────────────────┐
+ *                      │              上电 / 唤醒复位              │
+ *                      └──────────────────┬──────────────────────┘
+ *                                         │
+ *                                         ▼
+ *                              ┌─────────────────────┐
+ *                              │   STATE_BOOT_CHECK  │  检测PB11 / NTP
+ *                              └──────────┬──────────┘
+ *                   PB11高电平 │           │ PB11低电平
+ *                              ▼           ▼
+ *                   ┌──────────────┐  ┌──────────────────┐
+ *                   │ STATE_BOOT_  │  │  STATE_BOOT_NTP  │
+ *                   │  DOWNLOAD   │  │  （一次性，完成    │
+ *                   │ （死循环）   │  │   后自动离开）    │
+ *                   └──────────────┘  └────────┬─────────┘
+ *                                              │ NTP完成（成功或超时）
+ *                                              ▼
+ *                              ┌───────────────────────────┐
+ *                    ┌────────►│        STATE_IDLE         │◄──────────┐
+ *                    │         │  非闹钟期，计时后进待机    │           │
+ *                    │         └──────────┬────────────────┘           │
+ *                    │      超时           │          RTC闹钟触发        │
+ *                    │                    ▼          且不在闹钟期        │
+ *                    │         ┌─────────────────────┐                 │
+ *                    │         │    STATE_STANDBY     │                 │
+ *                    │         │  进入硬件待机，不返回  │                 │
+ *                    │         └─────────────────────┘                 │
+ *                    │                                                  │
+ *                    │  RTC闹钟触发                  闹钟期结束          │
+ *                    │  且在闹钟期          ┌────────────────────────┐  │
+ *                    └──────────────────────│      STATE_ALARM       ├──┘
+ *                                           │   闹钟期内，LED亮       │
+ *                                           └────────────────────────┘
+ *  */
+typedef enum {
+    STATE_BOOT_CHECK,    /* 初始化、外设检测 */
+    STATE_BOOT_DOWNLOAD, /* 下载模式：死循环 */
+    STATE_BOOT_NTP,      /* NTP同步中（一次性） */
+    STATE_IDLE,          /* 非闹钟期：显示时钟，倒计时后进入待机 */
+    STATE_STANDBY,       /* 即将进入硬件待机 */
+    STATE_ALARM,         /* 闹钟期内：LED亮，保持唤醒 */
+} AppState;
 
-/**
-  * 函    数：检查当前是否在闹钟维持期内
-  * 参    数：无
-  * 返 回 值：1表示在闹钟维持期内，0表示不在
-  */
-uint8_t IsInAlarmMaintainPeriod(void)
+/* 
+ * 事件定义
+ * 每个主循环 tick 开始时由 CollectEvents() 采样一次。
+ *  */
+typedef enum {
+    EVT_NONE            = 0x00,
+    EVT_RTC_ALARM       = 0x01,  /* RTC_FLAG_ALR 已置位 */
+    EVT_IN_ALARM_PERIOD = 0x02,  /* 当前时刻落在某个闹钟窗口内 */
+    EVT_STANDBY_TIMEOUT = 0x04,  /* IDLE 倒计时到零 */
+} AppEvent;
+
+/* 
+ * 模块内部状态
+ *  */
+static AppState g_state      = STATE_BOOT_CHECK;
+static uint32_t g_idle_ticks = 0;  /* IDLE 状态已经历的 tick 数 */
+static uint8_t  g_heartbeat  = 0;  /* 0/1 交替，驱动 '*' 闪烁 */
+
+/* 
+ * 闹钟调度辅助函数
+ *  */
+
+/* 将 AlarmSlot[idx] 转换为从午夜起的 开始/结束 秒数。
+ * end 可能 > 86400（跨天），调用方自行处理取模。 */
+static void AlarmSlotToSecs(uint8_t idx,
+                             uint32_t *out_start,
+                             uint32_t *out_end)
 {
-    MyRTC_ReadTime();  // 读取当前时间到MyRTC_Time数组（UTC+8）
-
-    uint16_t current_minutes = (uint16_t)MyRTC_Time[3] * 60u + MyRTC_Time[4];
-
-    // 如果结束时间 <= 开始时间，说明时间段跨天（或整整一天）
-    if (ALARM_END_MINS_MIDNIGHT <= ALARM_START_MINS_MIDNIGHT)
-    {
-        // 跨天情况：在维持期内 ⟺ 当前 >= 开始 OR 当前 < 结束
-        if (current_minutes >= ALARM_START_MINS_MIDNIGHT ||
-            current_minutes <  ALARM_END_MINS_MIDNIGHT)
-        {
-            return 1;
-        }
-    }
-    else
-    {
-        // 同一天情况：在维持期内 ⟺ 开始 <= 当前 < 结束
-        if (current_minutes >= ALARM_START_MINS_MIDNIGHT &&
-            current_minutes <  ALARM_END_MINS_MIDNIGHT)
-        {
-            return 1;
-        }
-    }
-
-    return 0;
+    uint32_t start = ((uint32_t)ALARMS[idx].start_hour   * 60u
+                    + (uint32_t)ALARMS[idx].start_minute) * 60u;
+    *out_start = start;
+    *out_end   = start + (uint32_t)ALARMS[idx].duration_minutes * 60u;
 }
 
-/**
-  * 函    数：计算下一个闹钟开始时间（RTC秒计数器绝对值）
-  * 参    数：无
-  * 返 回 值：下一个闹钟开始时刻对应的RTC计数器值
-  */
-uint32_t GetNextAlarmStartTime(void)
+/* 返回当前落入的闹钟索引（0-based），不在任何闹钟期内则返回 -1。*/
+static int8_t FindActiveAlarm(uint32_t current_secs)
 {
-    MyRTC_ReadTime();  // 读取当前时间到MyRTC_Time数组（UTC+8）
-
-    uint32_t current_secs_since_midnight =
-        (uint32_t)MyRTC_Time[3] * 3600u +
-        (uint32_t)MyRTC_Time[4] * 60u   +
-        MyRTC_Time[5];
-
-    uint32_t alarm_secs_since_midnight =
-        (uint32_t)ALARM_START_HOUR   * 3600u +
-        (uint32_t)ALARM_START_MINUTE * 60u;
-
-    uint32_t seconds_to_next_alarm;
-
-    if (current_secs_since_midnight < alarm_secs_since_midnight)
+    uint8_t i;
+    for (i = 0; i < ALARM_COUNT; i++)
     {
-        // 还没到今天的闹钟时间
-        seconds_to_next_alarm = alarm_secs_since_midnight - current_secs_since_midnight;
-    }
-    else
-    {
-        // 已过了今天的闹钟时间，等到明天
-        seconds_to_next_alarm = (24u * 3600u - current_secs_since_midnight)
-                                + alarm_secs_since_midnight;
-    }
+        uint32_t s, e;
+        AlarmSlotToSecs(i, &s, &e);
 
-    uint32_t current_counter = RTC_GetCounter();
-
-    return current_counter + seconds_to_next_alarm;
+        if (e > 86400u)
+        {
+            /* 跨天：[s, 86400) ∪ [0, e-86400) */
+            if (current_secs >= s || current_secs < (e - 86400u))
+                return (int8_t)i;
+        }
+        else
+        {
+            if (current_secs >= s && current_secs < e)
+                return (int8_t)i;
+        }
+    }
+    return -1;
 }
 
-/**
-  * 函    数：更新闹钟显示和RTC闹钟寄存器
-  * 参    数：in_alarm_period - 当前是否在闹钟维持期内
-  * 返 回 值：无
-  */
-void UpdateAlarmDisplay(uint8_t in_alarm_period)
+/* 计算距当前最近的未来闹钟边界（start 或 end），
+ * 返回对应的 RTC 计数器绝对值，用于写入 RTC_ALR。*/
+static uint32_t FindNextAlarmBoundary(uint32_t current_counter,
+                                      uint32_t current_secs)
 {
-    if (in_alarm_period)
+    uint32_t min_delta = 0xFFFFFFFFu;
+    uint8_t  i;
+
+    for (i = 0; i < ALARM_COUNT; i++)
     {
-        // 在闹钟维持期内：设置闹钟为维持结束时刻
-        MyRTC_ReadTime();
-        uint32_t current_counter = RTC_GetCounter();
+        uint32_t s, e;
+        AlarmSlotToSecs(i, &s, &e);
 
-        uint16_t current_minutes = (uint16_t)MyRTC_Time[3] * 60u + MyRTC_Time[4];
-        uint16_t current_seconds_in_minute = MyRTC_Time[5];
-
-        int32_t remaining_seconds;
-
-        if (ALARM_END_MINS_MIDNIGHT <= ALARM_START_MINS_MIDNIGHT)
+        /* start 边界 */
         {
-            // 跨天情况
-            if (current_minutes >= ALARM_START_MINS_MIDNIGHT)
+            uint32_t s_mod = s % 86400u;
+            uint32_t delta = (s_mod > current_secs)
+                           ? (s_mod - current_secs)
+                           : (86400u - current_secs + s_mod);
+            if (delta < min_delta) min_delta = delta;
+        }
+
+        /* end 边界 */
+        {
+            uint32_t delta;
+            if (e > 86400u)
             {
-                remaining_seconds = (int32_t)(24u * 60u - current_minutes + ALARM_END_MINS_MIDNIGHT) * 60
-                                    - (int32_t)current_seconds_in_minute;
+                delta = (e > current_secs)
+                      ? (e - current_secs)
+                      : (86400u - current_secs + (e % 86400u));
             }
             else
             {
-                remaining_seconds = (int32_t)(ALARM_END_MINS_MIDNIGHT - current_minutes) * 60
-                                    - (int32_t)current_seconds_in_minute;
+                uint32_t e_mod = e % 86400u;
+                delta = (e_mod > current_secs)
+                      ? (e_mod - current_secs)
+                      : (86400u - current_secs + e_mod);
+                if (delta == 0u) delta = 86400u;  /* 恰好相等，等到明天 */
             }
+            if (delta < min_delta) min_delta = delta;
         }
-        else
-        {
-            // 同一天情况
-            remaining_seconds = (int32_t)(ALARM_END_MINS_MIDNIGHT - current_minutes) * 60
-                                - (int32_t)current_seconds_in_minute;
-        }
-
-        if (remaining_seconds < 0)
-        {
-            remaining_seconds = 0;
-        }
-
-        uint32_t maintain_end_counter = current_counter + (uint32_t)remaining_seconds;
-
-        RTC_SetAlarm(maintain_end_counter);
-        RTC_WaitForLastTask();
-
-        OLED_ShowString(4, 6, "ALARM ON");
     }
-    else
+
+    if (min_delta == 0u) min_delta = 1u;  /* 保险：至少等1秒 */
+    return current_counter + min_delta;
+}
+
+/* 将下一个边界写入 RTC_ALR。*/
+static void ScheduleNextBoundary(void)
+{
+    uint32_t ctr  = RTC_GetCounter();
+    uint32_t secs = MyRTC_CounterToSecsMidnight(ctr);
+    RTC_SetAlarm(FindNextAlarmBoundary(ctr, secs));
+    RTC_WaitForLastTask();
+}
+
+/* 
+ * 事件采集
+ * 在每个 tick 的最开始调用，返回本 tick 的事件位掩码。
+ * RTC_FLAG_ALR 在此处清除，确保每次唤醒只处理一次。
+ *  */
+static AppEvent CollectEvents(void)
+{
+    AppEvent evt = EVT_NONE;
+
+    /* 1. RTC 闹钟标志 */
+    if (RTC_GetFlagStatus(RTC_FLAG_ALR) == SET)
     {
-        // 不在闹钟维持期：设置下一个闹钟开始时刻
-        uint32_t next_alarm = GetNextAlarmStartTime();
-
-        RTC_SetAlarm(next_alarm);
+        RTC_ClearFlag(RTC_FLAG_ALR);
         RTC_WaitForLastTask();
+        evt = (AppEvent)(evt | EVT_RTC_ALARM);
+    }
 
-        OLED_ShowString(4, 6, "WAIT ALR");
+    /* 2. 当前是否在某个闹钟期内 */
+    uint32_t secs = MyRTC_CounterToSecsMidnight(RTC_GetCounter());
+    if (FindActiveAlarm(secs) >= 0)
+        evt = (AppEvent)(evt | EVT_IN_ALARM_PERIOD);
+
+    /* 3. IDLE 超时 */
+    if (g_idle_ticks >= IDLE_STANDBY_DELAY_SEC)
+        evt = (AppEvent)(evt | EVT_STANDBY_TIMEOUT);
+
+    return evt;
+}
+
+/* 
+ * 状态入口动作（每次进入新状态时执行一次）
+ *  */
+static void OnEnter_Idle(void)
+{
+    g_idle_ticks = 0;
+    LED_set(GPIOA, GPIO_Pin_1, 0);
+    OLED_ShowString(4, 1, "MODE:WAIT ALR   ");
+    ScheduleNextBoundary();
+}
+
+static void OnEnter_Alarm(void)
+{
+    LED_set(GPIOA, GPIO_Pin_1, 1);
+    uint32_t secs = MyRTC_CounterToSecsMidnight(RTC_GetCounter());
+    int8_t   idx  = FindActiveAlarm(secs);
+    OLED_ShowString(4, 1, "MODE:ALM ");
+    OLED_ShowNum   (4, 10, (uint32_t)(idx + 1), 1);
+    OLED_ShowString(4, 11, " ON  ");
+    ScheduleNextBoundary();
+}
+
+static void OnEnter_Standby(void)
+{
+    LED_set(GPIOA, GPIO_Pin_1, 0);
+    OLED_ShowString(4, 1, "MODE:STANDBY    ");
+    Delay_ms(500);
+    OLED_Clear();
+    PWR_EnterSTANDBYMode();
+    /* 不会执行到这里：唤醒后从 main() 顶部重新开始 */
+}
+
+/* 
+ * 状态转移
+ * 根据当前状态和事件决定下一个状态；状态变化时自动执行入口动作。
+ *  */
+static void FSM_Transition(AppEvent evt)
+{
+    AppState next = g_state;
+
+    switch (g_state)
+    {
+        case STATE_BOOT_CHECK:
+            if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_11) == Bit_SET)
+                next = STATE_BOOT_DOWNLOAD;
+            else if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_1) == Bit_SET)
+                next = STATE_BOOT_NTP;
+            else
+                next = STATE_IDLE;
+            break;
+
+        case STATE_BOOT_DOWNLOAD:
+            break;  /* 死循环，永不转移 */
+
+        case STATE_BOOT_NTP:
+            /* NTP 同步是阻塞操作，完成后立刻决定去向 */
+            next = (evt & EVT_IN_ALARM_PERIOD) ? STATE_ALARM : STATE_IDLE;
+            break;
+
+        case STATE_IDLE:
+            if (evt & EVT_IN_ALARM_PERIOD)
+                next = STATE_ALARM;
+            else if (evt & EVT_STANDBY_TIMEOUT)
+                next = STATE_STANDBY;
+            break;
+
+        case STATE_STANDBY:
+            break;  /* OnEnter_Standby() 调用 PWR_EnterSTANDBYMode()，不会返回 */
+
+        case STATE_ALARM:
+            if (!(evt & EVT_IN_ALARM_PERIOD))
+                next = STATE_IDLE;
+            break;
+    }
+
+    /* 状态发生变化：执行入口动作 */
+    if (next != g_state)
+    {
+        g_state = next;
+        switch (g_state)
+        {
+            case STATE_IDLE:    OnEnter_Idle();    break;
+            case STATE_ALARM:   OnEnter_Alarm();   break;
+            case STATE_STANDBY: OnEnter_Standby(); break;
+            default: break;
+        }
     }
 }
 
+/* 
+ * 状态内持续动作（每 tick 执行）
+ *  */
+static void FSM_Tick(void)
+{
+    switch (g_state)
+    {
+        case STATE_IDLE:
+        case STATE_ALARM:
+            OLED_ShowNum(1, 5, RTC_GetCounter(), 10);
+            OLED_ShowNum(3, 6, RTC_GetFlagStatus(RTC_FLAG_ALR), 1);
+            OLED_ShowString(3, 8, g_heartbeat ? "*" : " ");
+            g_heartbeat ^= 1u;
+
+            if (g_state == STATE_IDLE)
+                g_idle_ticks++;
+            else
+                g_idle_ticks = 0;
+            break;
+
+        default:
+            break;
+    }
+}
+
+/* 
+ * 启动阶段处理（阻塞式，只在 main() 开头执行一次）
+ *  */
+static void Boot_RunDownloadMode(void)
+{
+    OLED_ShowString(1, 1, "DOWNLOAD MODE   ");
+    OLED_ShowString(2, 1, "PB11=HIGH       ");
+    OLED_ShowString(3, 1, "Waiting...      ");
+    OLED_ShowString(4, 1, "Pull PB11 LOW   ");
+    while (1);
+}
+
+static void Boot_RunNTP(void)
+{
+    OLED_ShowString(1, 1, "NTP Syncing...  ");
+    OLED_ShowString(1, 1, NTP_SyncTime() ? "NTP OK!         "
+                                         : "NTP FAIL-RTC OK ");
+    Delay_ms(1500);
+    OLED_Clear();
+}
+
+static void Boot_SkipNTP(void)
+{
+    OLED_ShowString(1, 1, "NTP SKIP-RTC OK ");
+    Delay_ms(1500);
+    OLED_Clear();
+}
+
+/* 
+ * main
+ *  */
 int main(void)
 {
-    /*======================================================
-     * 安全启动窗口（防止反复进入待机模式导致无法下载程序）
-     *======================================================*/
-    #define SAFE_BOOT_WINDOW_MS  3000u
+    /* ---- 外设初始化 ---- */
+    OLED_Init();
+    LED_Init(GPIO_Pin_1);
+    MyRTC_Init();
+    USART1_Init();
+    Delay_ms(10);
+    Key_Init();
 
-    /*模块初始化*/
-    OLED_Init();        // OLED初始化
-	LED_Init(GPIO_Pin_1);
-    MyRTC_Init();       // RTC初始化
-    USART1_Init();      // USART1初始化（用于与ESP32通信）
-    Delay_ms(10);       // 等待USART外设稳定，防止第一个字节发送损坏
+    /* ---- 使能 WKUP 引脚（PA0 上升沿唤醒待机） ---- */
+    PWR_WakeUpPinCmd(ENABLE);
 
-    /*开启PWR时钟（待机模式必须）*/
-    RCC_APB1PeriphClockCmd(RCC_APB1Periph_PWR, ENABLE);
+    /* ---- 启动阶段：BOOT_CHECK → DOWNLOAD / NTP / IDLE ---- */
+    g_state = STATE_BOOT_CHECK;
+    FSM_Transition(EVT_NONE);
 
-    /*安全启动倒计时——显示在OLED上，方便确认*/
-    #if SAFE_BOOT_WINDOW_MS > 0
+    if (g_state == STATE_BOOT_DOWNLOAD)
     {
-        uint32_t remaining = SAFE_BOOT_WINDOW_MS / 1000u;
-        while (remaining > 0)
-        {
-            OLED_ShowString(1, 1, "BOOT WAIT:");
-            OLED_ShowNum(1, 11, remaining, 1);
-            OLED_ShowString(1, 12, "s ");
-            Delay_ms(1000);
-            remaining--;
-        }
-        OLED_Clear();
+        Boot_RunDownloadMode();   /* 不返回 */
     }
-    #endif
-
-    /*NTP时间同步（通过ESP32获取网络时间）*/
-    OLED_ShowString(1, 1, "NTP Syncing...  ");
-    if (NTP_SyncTime())
+    else if (g_state == STATE_BOOT_NTP)
     {
-        OLED_ShowString(1, 1, "NTP OK!         ");
+        Boot_RunNTP();
+        FSM_Transition(EVT_NONE); /* NTP → ALARM / IDLE，含入口动作 */
     }
     else
     {
-        OLED_ShowString(1, 1, "NTP FAIL-RTC OK ");  // 同步失败，继续使用RTC现有时间
+        /* STATE_IDLE：直接跳过 NTP */
+        Boot_SkipNTP();
+        OnEnter_Idle();
     }
-    Delay_ms(1500);
-    OLED_Clear();
 
-    /*显示静态字符串*/
+    /* ---- 静态 OLED 标签 ---- */
     OLED_ShowString(1, 1, "CNT:");
-    OLED_ShowString(2, 1, "CFG:");
-    OLED_ShowNum(2, 5, ALARM_START_HOUR,   2);
-    OLED_ShowString(2, 7, ":");
-    OLED_ShowNum(2, 8, ALARM_START_MINUTE, 2);
+    OLED_ShowString(2, 1, "ALM:");
+    OLED_ShowNum   (2, 5, ALARM_COUNT, 2);
     OLED_ShowString(3, 1, "ALRF:");
     OLED_ShowString(4, 1, "MODE:");
 
-    /*使能WKUP引脚（PA0上升沿唤醒待机模式）*/
-    PWR_WakeUpPinCmd(ENABLE);
-
-    /*明确读取一次时间，确保MyRTC_Time[]是最新值*/
-    MyRTC_ReadTime();
-
-    /*检查当前是否在闹钟维持期，并设置RTC闹钟*/
-    uint8_t in_alarm_period = IsInAlarmMaintainPeriod();
-    UpdateAlarmDisplay(in_alarm_period);
-    LED_set(GPIOA, GPIO_Pin_1, in_alarm_period);  // 启动时立即同步LED状态
-
+    /* ---- 主循环 ---- */
     while (1)
     {
-        /*更新动态显示*/
-        OLED_ShowNum(1, 5, RTC_GetCounter(), 10);               // CNT 秒计数器
-        OLED_ShowNum(3, 6, RTC_GetFlagStatus(RTC_FLAG_ALR), 1); // ALRF 标志位
-
-        /*检查闹钟标志*/
-        if (RTC_GetFlagStatus(RTC_FLAG_ALR) == SET)
-        {
-            RTC_ClearFlag(RTC_FLAG_ALR);
-            RTC_WaitForLastTask();
-
-            in_alarm_period = IsInAlarmMaintainPeriod();
-            UpdateAlarmDisplay(in_alarm_period);
-            LED_set(GPIOA, GPIO_Pin_1, in_alarm_period);  // 闹钟状态切换时立即同步LED
-        }
-
-        /*Running 指示灯*/
-        OLED_ShowString(3, 8, "*");
-        Delay_ms(1000);
-        OLED_ShowString(3, 8, " ");
-        Delay_ms(1000);
-
-        /*根据是否在闹钟期决定是否进入待机模式*/
-        if (!in_alarm_period)
-        {
-            // 非闹钟期：短暂提示后进入待机
-			LED_set(GPIOA, GPIO_Pin_1, 0);
-            OLED_ShowString(4, 1, "MODE:STANDBY    ");
-            Delay_ms(6000);
-
-            OLED_Clear();           // 清屏（关闭显示，降低功耗）
-            PWR_EnterSTANDBYMode(); // 进入待机模式；唤醒后从头开始运行
-            /*--- 唤醒后程序重新从 main() 顶部执行 ---*/
-        }
-        else
-        {
-            // 闹钟期：保持运行，每秒刷新一次
-			LED_set(GPIOA, GPIO_Pin_1, 1);
-            Delay_ms(800);
-        }
+        AppEvent evt = CollectEvents();   /* 1. 采集事件 */
+        FSM_Transition(evt);              /* 2. 状态转移（含入口动作） */
+        FSM_Tick();                       /* 3. 状态内持续动作 */
+        Delay_ms(1000);                   /* 4. 固定 tick 周期：1 秒 */
     }
 }
