@@ -13,10 +13,10 @@ void Key_Init(void)
 	
 	/*GPIO初始化*/
 	GPIO_InitTypeDef GPIO_InitStructure;
-	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPU;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPD;               // 下拉输入：默认低电平
 	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_1 | GPIO_Pin_11;
 	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-	GPIO_Init(GPIOB, &GPIO_InitStructure);						//将PB1和PB11引脚初始化为上拉输入
+	GPIO_Init(GPIOB, &GPIO_InitStructure);						//将PB1和PB11引脚初始化为下拉输入
 }
 
 /**
@@ -29,18 +29,18 @@ uint8_t Key_GetNum(void)
 {
 	uint8_t KeyNum = 0;		//定义变量，默认键码值为0
 	
-	if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_1) == 0)			//读PB1输入寄存器的状态，如果为0，则代表按键1按下
+	if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_1) == 1)			//读PB1输入寄存器的状态，如果为1，则代表按键1按下
 	{
 		Delay_ms(20);											//延时消抖
-		while (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_1) == 0);	//等待按键松手
+		while (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_1) == 1);	//等待按键松手
 		Delay_ms(20);											//延时消抖
 		KeyNum = 1;												//置键码为1
 	}
 	
-	if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_11) == 0)			//读PB11输入寄存器的状态，如果为0，则代表按键2按下
+	if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_11) == 1)			//读PB11输入寄存器的状态，如果为1，则代表按键2按下
 	{
 		Delay_ms(20);											//延时消抖
-		while (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_11) == 0);	//等待按键松手
+		while (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_11) == 1);	//等待按键松手
 		Delay_ms(20);											//延时消抖
 		KeyNum = 2;												//置键码为2
 	}

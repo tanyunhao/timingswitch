@@ -3,12 +3,12 @@
         {
             "name": "Target 1",
             "includePath": [
-                "c:\\Users\\tanbin\\Desktop\\stm32esp32\\STM32\\timingswitch\\Start",
-                "c:\\Users\\tanbin\\Desktop\\stm32esp32\\STM32\\timingswitch\\Library",
-                "c:\\Users\\tanbin\\Desktop\\stm32esp32\\STM32\\timingswitch\\User",
-                "c:\\Users\\tanbin\\Desktop\\stm32esp32\\STM32\\timingswitch\\System",
-                "c:\\Users\\tanbin\\Desktop\\stm32esp32\\STM32\\timingswitch\\Hardware",
-                "D:\\AppGallery\\Software\\Keil_v5\\ARM\\ARMCC\\include"
+                "c:\\Users\\tanbin\\Desktop\\timingswitch\\Start",
+                "c:\\Users\\tanbin\\Desktop\\timingswitch\\Library",
+                "c:\\Users\\tanbin\\Desktop\\timingswitch\\User",
+                "c:\\Users\\tanbin\\Desktop\\timingswitch\\System",
+                "c:\\Users\\tanbin\\Desktop\\timingswitch\\Hardware",
+                "D:\\Keil_v5\\ARM\\ARMCC\\include"
             ],
             "defines": [
                 "USE_STDPERIPH_DRIVER",

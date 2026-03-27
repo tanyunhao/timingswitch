@@ -220,6 +220,11 @@ static void OnEnter_Standby(void)
 /* 
  * 状态转移
  * 根据当前状态和事件决定下一个状态；状态变化时自动执行入口动作。
+ *
+ * 按键逻辑（下拉输入，按下 = HIGH）：
+ *   PB11 HIGH → 进入下载模式
+ *   PB1  HIGH → 进入NTP同步
+ *   均为LOW   → 跳过，进入IDLE
  *  */
 static void FSM_Transition(AppEvent evt)
 {
@@ -229,11 +234,11 @@ static void FSM_Transition(AppEvent evt)
     {
         case STATE_BOOT_CHECK:
             if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_11) == Bit_SET)
-                next = STATE_BOOT_DOWNLOAD;
+                next = STATE_BOOT_DOWNLOAD;                         /* PB11按下（HIGH）→ 下载模式 */
             else if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_1) == Bit_SET)
-                next = STATE_BOOT_NTP;
+                next = STATE_BOOT_NTP;                              /* PB1按下（HIGH）→ NTP同步 */
             else
-                next = STATE_IDLE;
+                next = STATE_IDLE;                                  /* 均未按下（LOW）→ 正常启动 */
             break;
 
         case STATE_BOOT_DOWNLOAD:

@@ -794,9 +794,9 @@ Removing Unused input sections from the image.
     Removing oled.o(i.OLED_ShowBinNum), (62 bytes).
     Removing oled.o(i.OLED_ShowHexNum), (84 bytes).
     Removing oled.o(i.OLED_ShowSignedNum), (102 bytes).
-    Removing key.o(i.Key_GetNum), (92 bytes).
+    Removing key.o(i.Key_GetNum), (96 bytes).
 
-444 unused section(s) (total 17982 bytes) removed from the image.
+444 unused section(s) (total 17986 bytes) removed from the image.
 
 ==============================================================================
 
